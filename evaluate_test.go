@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -101,7 +102,7 @@ func TestEvaluateDisabledFlagDecisionFalse(t *testing.T) {
 	if resp.Decision {
 		t.Fatal("expected decision false for disabled flag")
 	}
-	if resp.Key != "feature" || resp.User != "alice" {
+	if resp.Key != "feature" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
@@ -172,5 +173,16 @@ func TestEvaluateDoesNotPersistUser(t *testing.T) {
 		if f.Description == "alice" {
 			t.Fatal("user value leaked into store")
 		}
+	}
+}
+
+func TestEvaluateDoesNotEchoUser(t *testing.T) {
+	seedFlag(t, Flag{Key: "feature", Enabled: true, RolloutPercent: 100})
+	rr := performEvaluate(t, "/flags/feature/evaluate?user=alice")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "alice") {
+		t.Fatalf("user value leaked into response body: %s", rr.Body.String())
 	}
 }

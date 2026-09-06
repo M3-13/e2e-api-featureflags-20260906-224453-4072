@@ -36,9 +36,10 @@ func Decide(key, user string, enabled bool, rolloutPercent int) bool {
 }
 
 // evaluateResponse is the JSON body returned by GET /flags/{key}/evaluate.
+// The user identifier is intentionally not echoed back: it is used exclusively
+// to compute the decision hash (see AC-16).
 type evaluateResponse struct {
 	Key            string `json:"key"`
-	User           string `json:"user"`
 	Enabled        bool   `json:"enabled"`
 	RolloutPercent int    `json:"rollout_percent"`
 	Decision       bool   `json:"decision"`
@@ -47,8 +48,8 @@ type evaluateResponse struct {
 // Evaluate handles GET /flags/{key}/evaluate?user={id}.
 //
 // The user value is read from the query parameter and is used exclusively to
-// compute the decision hash; it is never persisted anywhere. A missing or
-// empty user yields 400, an unknown key yields 404.
+// compute the decision hash; it is never persisted or echoed back anywhere.
+// A missing or empty user yields 400, an unknown key yields 404.
 func Evaluate(w http.ResponseWriter, r *http.Request) {
 	user := r.URL.Query().Get("user")
 	if user == "" {
@@ -71,7 +72,6 @@ func Evaluate(w http.ResponseWriter, r *http.Request) {
 
 	resp := evaluateResponse{
 		Key:            flag.Key,
-		User:           user,
 		Enabled:        flag.Enabled,
 		RolloutPercent: flag.RolloutPercent,
 		Decision:       decision,
