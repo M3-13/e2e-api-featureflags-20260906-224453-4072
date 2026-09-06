@@ -371,6 +371,18 @@ func TestUpdateFlagDescriptionTooLong(t *testing.T) {
 	}
 }
 
+func TestUpdateFlagKeyTooLong(t *testing.T) {
+	resetStore()
+	key := strings.Repeat("k", MaxKeyLen+1)
+	rr := doRequest(t, http.MethodPut, "/flags/"+key, `{"enabled":false}`, "application/json")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if decodeError(t, rr.Body.String()) == "" {
+		t.Fatal("expected error message")
+	}
+}
+
 func TestCreateFlagKeyAtLimitSucceeds(t *testing.T) {
 	resetStore()
 	key := strings.Repeat("k", MaxKeyLen)

@@ -151,6 +151,10 @@ func GetFlag(w http.ResponseWriter, r *http.Request) {
 
 func UpdateFlag(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
+	if len(key) > MaxKeyLen {
+		writeError(w, http.StatusBadRequest, "key must not exceed 128 characters")
+		return
+	}
 
 	var p UpdatePatch
 	if !readJSONBody(w, r, &p) {
