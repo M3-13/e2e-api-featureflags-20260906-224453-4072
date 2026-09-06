@@ -1,7 +1,10 @@
 package main
 
 import (
+	"log"
 	"net/http"
+	"os"
+	"time"
 )
 
 func healthz(w http.ResponseWriter, r *http.Request) {
@@ -17,24 +20,44 @@ func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
 }
 
 func newHandler() http.Handler {
+	protected := http.NewServeMux()
+
+	protected.HandleFunc("POST /flags", CreateFlag)
+	protected.HandleFunc("GET /flags", ListFlags)
+	protected.HandleFunc("GET /flags/{key}", GetFlag)
+	protected.HandleFunc("PUT /flags/{key}", UpdateFlag)
+	protected.HandleFunc("DELETE /flags/{key}", DeleteFlag)
+	protected.HandleFunc("GET /flags/{key}/evaluate", Evaluate)
+
+	protected.HandleFunc("/flags", methodNotAllowed)
+	protected.HandleFunc("/flags/{key}", methodNotAllowed)
+	protected.HandleFunc("/flags/{key}/evaluate", methodNotAllowed)
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", healthz)
 
-	mux.HandleFunc("POST /flags", CreateFlag)
-	mux.HandleFunc("GET /flags", ListFlags)
-	mux.HandleFunc("GET /flags/{key}", GetFlag)
-	mux.HandleFunc("PUT /flags/{key}", UpdateFlag)
-	mux.HandleFunc("DELETE /flags/{key}", DeleteFlag)
-	mux.HandleFunc("GET /flags/{key}/evaluate", Evaluate)
-
-	mux.HandleFunc("/flags", methodNotAllowed)
-	mux.HandleFunc("/flags/{key}", methodNotAllowed)
-	mux.HandleFunc("/flags/{key}/evaluate", methodNotAllowed)
+	mux.Handle("/", RequireAuth(RateLimit(protected)))
 
 	return Logging(mux)
 }
 
 func main() {
-	http.ListenAndServe(":8080", newHandler())
+	addr := os.Getenv("FLAG_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:8080"
+	}
+
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           newHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
