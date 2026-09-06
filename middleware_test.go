@@ -92,3 +92,41 @@ func TestLoggingDoesNotLogQueryParameters(t *testing.T) {
 		t.Fatalf("expected no query string in log, got %q", logOutput)
 	}
 }
+
+func TestLoggingEscapesNewlineInPath(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rr := httptest.NewRecorder()
+	logOutput := captureLog(t, func() {
+		handler := Logging(next)
+		req := httptest.NewRequest(http.MethodGet, "/flags/%0Aevil", nil)
+		handler.ServeHTTP(rr, req)
+	})
+
+	if strings.Contains(logOutput, "\n/evil") || strings.Contains(logOutput, "\n%0Aevil") {
+		t.Fatalf("expected newline to be escaped, got raw line break in log: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, `\n`) {
+		t.Fatalf("expected escaped newline (%s) in log, got %q", `\n`, logOutput)
+	}
+}
+
+func TestLoggingSetsSecurityHeaders(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rr := httptest.NewRecorder()
+	handler := Logging(next)
+	req := httptest.NewRequest(http.MethodGet, "/flags", nil)
+	handler.ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected Cache-Control: no-store, got %q", got)
+	}
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("expected X-Content-Type-Options: nosniff, got %q", got)
+	}
+}
