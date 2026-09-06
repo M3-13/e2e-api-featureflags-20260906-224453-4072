@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -333,5 +334,65 @@ func TestMethodNotAllowed(t *testing.T) {
 	rr := doRequest(t, http.MethodDelete, "/flags", "", "")
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestCreateFlagKeyTooLong(t *testing.T) {
+	resetStore()
+	key := strings.Repeat("k", MaxKeyLen+1)
+	rr := postFlag(t, `{"key":"`+key+`","enabled":true}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if decodeError(t, rr.Body.String()) == "" {
+		t.Fatal("expected error message")
+	}
+}
+
+func TestCreateFlagDescriptionTooLong(t *testing.T) {
+	resetStore()
+	desc := strings.Repeat("d", MaxDescLen+1)
+	rr := postFlag(t, `{"key":"ok","enabled":true,"description":"`+desc+`"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if decodeError(t, rr.Body.String()) == "" {
+		t.Fatal("expected error message")
+	}
+}
+
+func TestUpdateFlagDescriptionTooLong(t *testing.T) {
+	resetStore()
+	postFlag(t, `{"key":"upd","enabled":true}`)
+	desc := strings.Repeat("d", MaxDescLen+1)
+	rr := doRequest(t, http.MethodPut, "/flags/upd", `{"description":"`+desc+`"}`, "application/json")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
+func TestCreateFlagKeyAtLimitSucceeds(t *testing.T) {
+	resetStore()
+	key := strings.Repeat("k", MaxKeyLen)
+	rr := postFlag(t, `{"key":"`+key+`","enabled":true}`)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for key at limit, got %d", rr.Code)
+	}
+}
+
+func TestCreateFlagLimitExceeded(t *testing.T) {
+	resetStore()
+	for i := 0; i < MaxFlags; i++ {
+		rr := postFlag(t, `{"key":"f-`+fmt.Sprintf("%d", i)+`","enabled":true}`)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201 at flag %d, got %d", i, rr.Code)
+		}
+	}
+	rr := postFlag(t, `{"key":"overflow","enabled":true}`)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+	if msg := decodeError(t, rr.Body.String()); msg != "flag limit reached" {
+		t.Fatalf("expected 'flag limit reached', got %q", msg)
 	}
 }

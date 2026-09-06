@@ -7,6 +7,13 @@ import (
 )
 
 var ErrFlagExists = errors.New("flag already exists")
+var ErrFlagLimit = errors.New("flag limit reached")
+
+const (
+	MaxFlags   = 10000
+	MaxKeyLen  = 128
+	MaxDescLen = 1024
+)
 
 type Flag struct {
 	Key            string `json:"key"`
@@ -35,6 +42,9 @@ func (s *Store) Create(f Flag) error {
 	defer s.mu.Unlock()
 	if _, exists := s.flags[f.Key]; exists {
 		return ErrFlagExists
+	}
+	if len(s.flags) >= MaxFlags {
+		return ErrFlagLimit
 	}
 	s.flags[f.Key] = f
 	return nil
