@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +104,32 @@ func TestStoreDelete(t *testing.T) {
 	}
 	if s.Delete("k") {
 		t.Fatal("expected second delete to fail")
+	}
+}
+
+func TestStoreCreateFlagLimit(t *testing.T) {
+	s := NewStore()
+	for i := 0; i < MaxFlags; i++ {
+		key := fmt.Sprintf("flag-%d", i)
+		if err := s.Create(Flag{Key: key, Enabled: true}); err != nil {
+			t.Fatalf("unexpected error at flag %d: %v", i, err)
+		}
+	}
+	if err := s.Create(Flag{Key: "overflow", Enabled: true}); !errors.Is(err, ErrFlagLimit) {
+		t.Fatalf("expected ErrFlagLimit, got %v", err)
+	}
+}
+
+func TestStoreLengthConstants(t *testing.T) {
+	if MaxKeyLen != 128 {
+		t.Fatalf("expected MaxKeyLen 128, got %d", MaxKeyLen)
+	}
+	if MaxDescLen != 1024 {
+		t.Fatalf("expected MaxDescLen 1024, got %d", MaxDescLen)
+	}
+	key := strings.Repeat("a", MaxKeyLen)
+	desc := strings.Repeat("b", MaxDescLen)
+	if len(key) != MaxKeyLen || len(desc) != MaxDescLen {
+		t.Fatal("constant values inconsistent with generated lengths")
 	}
 }

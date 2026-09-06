@@ -90,6 +90,14 @@ func CreateFlag(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "key must not be empty")
 		return
 	}
+	if len(key) > MaxKeyLen {
+		writeError(w, http.StatusBadRequest, "key must not exceed 128 characters")
+		return
+	}
+	if len(in.Description) > MaxDescLen {
+		writeError(w, http.StatusBadRequest, "description must not exceed 1024 characters")
+		return
+	}
 	if in.Enabled == nil {
 		writeError(w, http.StatusBadRequest, "enabled is required")
 		return
@@ -116,6 +124,10 @@ func CreateFlag(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "flag already exists")
 			return
 		}
+		if errors.Is(err, ErrFlagLimit) {
+			writeError(w, http.StatusServiceUnavailable, "flag limit reached")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -139,9 +151,18 @@ func GetFlag(w http.ResponseWriter, r *http.Request) {
 
 func UpdateFlag(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
+	if len(key) > MaxKeyLen {
+		writeError(w, http.StatusBadRequest, "key must not exceed 128 characters")
+		return
+	}
 
 	var p UpdatePatch
 	if !readJSONBody(w, r, &p) {
+		return
+	}
+
+	if p.Description != nil && len(*p.Description) > MaxDescLen {
+		writeError(w, http.StatusBadRequest, "description must not exceed 1024 characters")
 		return
 	}
 
