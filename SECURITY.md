@@ -1,71 +1,64 @@
-# Sicherheitsdokumentation
+VERDICT: CHANGES_REQUESTED
 
-Dieses Dokument beschreibt die Sicherheitseigenschaften, das Bedrohungsmodell
-und den Update-/Patch-Prozess des Feature-Flag-Service.
+**Scanner-Hinweis:** Es wurden keine Security-Scanner für diesen Projekttyp ausgeführt. Die Bewertung basiert auf manueller Codeanalyse.
 
-## SBOM (Software Bill of Materials)
+## Sicherheitsbericht
 
-- **Abhängigkeiten:** keine Drittanbieter-Abhängigkeiten.
-- **Standardbibliothek:** ausschließlich Go-Standardbibliothek (`net/http`,
-  `crypto/sha256`, `encoding/json`, `sync`, u. a.).
-- **Sprache / Toolchain:** Go 1.23.
-- **Module:** kein externes `require` in `go.mod`.
+### 1. Mittel – Authentifizierungs-Brute-Force und unauthentifizierte Anfragen nicht wirksam ratenbegrenzt
+**Betroffene Stellen:** `main.go`, `auth.go`, `ratelimit.go`
 
-## Sicherheitseigenschaften
+**Problem:**  
+In `newHandler()` wird `RequireAuth(RateLimit(protected))` registriert. Das Rate-Limit liegt damit *hinter* der Authentifizierung. Zusätzlich begrenzt `RateLimit` nur `POST`, `PUT` und `DELETE`. Ein Angreifer kann dadurch unbegrenzt `GET`-Anfragen mit falschen API-Keys senden (z. B. `GET /flags`) und so ungestört Brute-Force-Versuche gegen den `X-API-Key` durchführen oder CPU/Netzwerk belasten, ohne je einen `429` zu erhalten.
 
-| Eigenschaft                        | Beschreibung |
-| ---------------------------------- | ------------ |
-| Body-Limit (1 MiB)                 | `POST /flags` und `PUT /flags/{key}` begrenzen den Request-Body über `http.MaxBytesReader` auf 1 MiB; größere Bodies werden mit `413` abgelehnt. |
-| Content-Type-Prüfung               | Nur `application/json` (auch mit `charset`) wird akzeptiert; andere Content-Types werden mit `415` abgelehnt. |
-| Deterministische SHA-256-Auswertung | Rollout-Entscheidungen basieren auf dem SHA-256-Hash von `key:user` (erste 8 Bytes als big-endian `uint64`, modulo 100). |
-| Keine PII im Log                   | Die Logging-Middleware protokolliert ausschließlich Methode, Pfad, Statuscode und Dauer — niemals den `user`-Query-Parameter. |
-| API-Key-Authentifizierung          | Alle API-Zugriffe werden über `FLAG_API_KEY` authentifiziert (Vergleich in konstanter Zeit). |
-| Rate-Limit                         | Anfragen werden pro Client begrenzt, um Missbrauch zu verhindern. |
-| Server-Timeouts                    | Der `http.Server` setzt Read-/Write-/Idle-Timeouts gegen Slowloris und Ressourcenerschöpfung. |
-| `Cache-Control: no-store`          | Antworten mit nutzerspezifischen Daten werden nicht zwischengespeichert. |
+**Konkreter Fix:**  
+Eine eigene Begrenzung für fehlgeschlagene Authentifizierungsversuche pro Client-IP in `RequireAuth` ergänzen, z. B.:
+- maximal 5 Fehlversuche pro IP und Zeitfenster,
+- danach `429 {"error":"too many unauthorized attempts"}`,
+- Zustand mit mutex-geschütztem Map- und Timer-Cleanup verwalten.
 
-## Bedrohungsmodell
+Alternativ `RateLimit` vor `RequireAuth` schalten und zusätzlich Authentifizierungsfehlversuche unabhängig von der HTTP-Methode limitieren. Wichtig: Legitime `GET`-Anfragen authentifizierter Clients sollten nicht unverhältnismäßig ausgebremst werden.
 
-### 1. Unverschlüsselte Übertragung
+---
 
-**Bedrohung:** Der Dienst überträgt standardmäßig unverschlüsselt (HTTP).
-Feature-Flag-Daten und die `user`-ID wären im Klartext im Netz lesbar.
+### 2. Mittel – API-Key kann bei nicht-lokalem Betrieb unverschlüsselt übertragen werden
+**Betroffene Stelle:** `main.go`
 
-**Gegenmaßnahme:** TLS-Terminierung über einen Reverse-Proxy. Der Dienst wird
-nicht direkt öffentlich exponiert; TLS wird am vorgelagerten Reverse-Proxy
-terminiert.
+**Problem:**  
+Der Server startet ausschließlich als `http.Server` ohne TLS. Das Standard-Binding `127.0.0.1:8080` schützt lokal, aber sobald `FLAG_ADDR` auf eine nicht-lokale Adresse gesetzt wird, wird der `X-API-Key` im Klartext über das Netzwerk übertragen und kann abgehört werden.
 
-### 2. Unauthentifizierter Zugriff
+**Konkreter Fix:**  
+- `ListenAndServeTLS` mit konfigurierbaren Zertifikatspfaden unterstützen oder
+- dokumentieren/erzwingen, dass der Dienst nur hinter einem TLS-terminierenden Reverse-Proxy betrieben wird, wenn das Binding nicht loopback ist.
+- Optional: Beim Start mit nicht-lokalem `FLAG_ADDR` ohne TLS eine Warnung ausgeben oder den Start verweigern.
 
-**Bedrohung:** Unbefugte könnten Feature-Flags lesen, anlegen, verändern oder
-löschen und damit das Produktverhalten manipulieren.
+---
 
-**Gegenmaßnahme:** API-Key-Authentifizierung über `FLAG_API_KEY` (Vergleich in
-konstanter Zeit).
+### 3. Niedrig – Rate-Limiter-Map wächst unbegrenzt
+**Betroffene Stelle:** `ratelimit.go`
 
-### 3. DoS / Ressourcenerschöpfung
+**Problem:**  
+`newRateLimiter()` erzeugt `buckets map[string]*tokenBucket`. Für jede neue Client-IP wird ein Eintrag angelegt, der nie entfernt wird. Bei langlebigem Betrieb oder vielen unterschiedlichen Client-IPs wächst der Speicher unbegrenzt.
 
-**Bedrohung:** Ein erreichbarer Client kann durch übermäßig große Bodies, viele
-Anfragen oder langsame Verbindungen Ressourcen (Speicher, CPU, Verbindungen)
-erschöpfen.
+**Konkreter Fix:**  
+Periodisch veraltete Buckets entfernen, z. B.:
+- im Hintergrund alle 1–5 Minuten Buckets löschen, deren `lastRefill` älter als 10–30 Minuten ist, oder
+- eine maximale Anzahl Einträge mit LRU-Eviction einführen.
 
-**Gegenmaßnahme:** 1-MiB-Body-Limit, Rate-Limit und Server-Timeouts.
+---
 
-### 4. Log-Injection
+### 4. Niedrig – JSON-Body akzeptiert weitere Daten nach dem ersten JSON-Objekt
+**Betroffene Stelle:** `flags.go`, Funktion `readJSONBody`
 
-**Bedrohung:** Steuerzeichen (z. B. `%0A`) im Pfad könnten Log-Einträge fälschen
-und Monitoring/Audit stören.
+**Problem:**  
+Nach `dec.Decode(dst)` wird der restliche Body lediglich per `io.Copy` verworfen. Dadurch wird z. B.  
+`{"key":"a","enabled":true}{"key":"b"}` als gültiger Body akzeptiert, obwohl genau ein JSON-Objekt erwartet wird. Das ist primär ein Validierungsproblem; bei vorgeschalteten Proxys kann es zu unklarer Body-Semantik führen.
 
-**Gegenmaßnahme:** Der Pfad wird escaped formatiert (z. B. mit `%q`), sodass
-Steuerzeichen neutralisiert werden.
+**Konkreter Fix:**  
+Statt des bisherigen Decoders den gesamten Body bis zum Limit zu lesen und anschließend `json.Unmarshal` zu verwenden, da `json.Unmarshal` zusätzliche Nicht-Whitespace-Daten ablehnt. Alternativ nach dem ersten `Decode` prüfen, dass nur noch Whitespace folgt. Das bestehende `http.MaxBytesReader`-Verhalten bleibt erhalten, damit übergroße Bodies weiterhin `413` auslösen.
 
-## Update- und Patch-Prozess
+---
 
-- Sicherheitsrelevante Änderungen durchlaufen den regulären CI-Prozess
-  (`go build ./...` und `go test ./...`).
-- Patches werden nach Review als Hotfix-Version veröffentlicht (SemVer,
-  `MAJOR.MINOR.PATCH`).
-- Die `go.mod` bleibt frei von externen Abhängigkeiten; jede hinzukommende
-  Abhängigkeit muss im SBOM nachgetragen und geprüft werden.
-- Schwachstellenmeldungen werden an die im Repository hinterlegte
-  Kontaktadresse gerichtet.
+**Nicht als Schwachstelle gewertet:**  
+- Die harten Test-API-Keys in `auth_test.go` sind reine Testwerte und kein produktives Geheimnis.  
+- Die Logging-Middleware protokolliert ausschließlich Methode, Pfad, Status und Dauer; Query-Parameter wie `user` werden nicht geloggt.  
+- Die SHA-256-basierte Rollout-Entscheidung ist deterministisch und gibt keine sensiblen Daten preis.
