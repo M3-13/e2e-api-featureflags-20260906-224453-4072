@@ -9,7 +9,14 @@
       "build": [["go", "build", "./..."]],
       "start": ["go", "run", "."],
       "port": 8080,
-      "health": { "path": "/healthz", "expect_status": [200] }
+      "health": { "path": "/healthz", "expect_status": [200] },
+      "env": {
+        "FLAG_ADDR": { "dev": "127.0.0.1:8080" },
+        "FLAG_API_KEY": {
+          "external": true,
+          "degraded_without": "all protected routes answer 401, /healthz stays reachable"
+        }
+      }
     }
   ]
 }

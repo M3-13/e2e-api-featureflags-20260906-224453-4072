@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,7 @@ func doRequest(t *testing.T, method, path, body string, contentType string) *htt
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	req.Header.Set("X-API-Key", os.Getenv("FLAG_API_KEY"))
 	rr := httptest.NewRecorder()
 	newHandler().ServeHTTP(rr, req)
 	return rr
@@ -167,6 +169,7 @@ func TestCreateFlagTrailingDataOverLimit(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/flags", strings.NewReader(body))
 	req.ContentLength = -1
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", os.Getenv("FLAG_API_KEY"))
 	rr := httptest.NewRecorder()
 	newHandler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusRequestEntityTooLarge {
@@ -181,6 +184,7 @@ func TestUpdateFlagTrailingDataOverLimit(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/flags/upd", strings.NewReader(body))
 	req.ContentLength = -1
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", os.Getenv("FLAG_API_KEY"))
 	rr := httptest.NewRecorder()
 	newHandler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusRequestEntityTooLarge {
