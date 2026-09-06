@@ -1,149 +1,145 @@
 VERDICT: CHANGES_REQUESTED
 
-Geprüft wurde der vollständig gemergte Stand des Go-Backends „Feature-Flag-Service“. Das Projekt ist ein reines Backend ohne Endnutzer-UI. Daher entfallen die Prüfbereiche „Mandatory texts & UI“ und „Accessibility“; der EU AI Act ist mangels KI-Funktion nicht anwendbar. Maßgeblich sind DSGVO und Cyber Resilience Act (CRA).
+## Einordnung
+
+Reines Go-Backend (REST-API, `net/http`, In-Memory-Store). Keine öffentliche Web-UI, daher keine Pflichten zu Cookie-Banner, Legal Notice, Barrierefreiheit oder AI-Act-Kennzeichnung. Relevant sind DSGVO und CRA. Der sichtbare Stand ist insgesamt solide, weist aber behebbare Lücken auf: unbegrenzte Speicherung von IP-Adressen im Rate-Limiter, Rate-Limit-Bypass bei unauthentifizierten Anfragen, potenziell personenbezogene Daten in Log-Pfaden sowie fehlende TLS-/SBOM-Dokumentation. Keine fundamentalen, sofort blockierenden Rechtsverstöße, daher keine Freigabe, aber auch kein „Blocked“.
 
 ---
 
-## 1. DSGVO (GDPR)
+## 1. DSGVO / Datenschutz
 
-### 1.1 Fehlende Transportverschlüsselung (TLS)
-- **Schweregrad:** hoch
-- **Ort:** `main.go`
-- **Befund:** Der Server startet mit `http.ListenAndServe(":8080", newHandler())`. Die `user`-ID wird über den Query-Parameter `GET /flags/{key}/evaluate?user=...` übertragen und im Antwort-JSON zurückgegeben. Ohne TLS sind personenbezogene Daten im Klartext im Netz lesbar. Das verletzt die Vertraulichkeitsanforderungen aus Art. 32 DSGVO.
-- **Konkrete Abhilfe:**  
-  In `main.go` TLS aktivieren, z. B.:
-  ```go
-  http.ListenAndServeTLS(":8443", "server.crt", "server.key", newHandler())
-  ```
-  Alternativ den Dienst ausschließlich hinter einem TLS-terminierenden Reverse-Proxy betreiben. Zusätzlich sollte die Adresse nicht pauschal an alle Interfaces gebunden werden; sicherer Default ist `127.0.0.1:8080`, sofern keine externe Erreichbarkeit erforderlich ist.
+### Finding D1 — Unbegrenzte Speicherung von IP-Adressen im Rate-Limiter
+**Schweregrad:** high
 
-### 1.2 Fehlende Zugriffskontrolle für mutierende Endpunkte
-- **Schweregrad:** hoch
-- **Ort:** `main.go`, `flags.go`
-- **Befund:** `POST /flags`, `PUT /flags/{key}` und `DELETE /flags/{key}` sind ohne Authentifizierung oder Autorisierung erreichbar. Wenn `description` personenbezogene Daten enthält, können Unbefugte diese lesen, verändern oder löschen. Auch die Auswertung mit fremden `user`-Werten ist unkontrolliert möglich. Das ist kein angemessenes Schutzniveau nach Art. 32 DSGVO.
-- **Konkrete Abhilfe:**  
-  In `newHandler()` eine Authentifizierungs-Middleware einführen, z. B. API-Key- oder Bearer-Token-Prüfung:
-  ```go
-  return AuthMiddleware(Logging(mux))
-  ```
-  Für Tests ist die Middleware mit einem Test-Token zu versehen. Mindestens müssen mutierende Endpunkte geschützt werden; `GET /healthz` darf öffentlich bleiben.
+`ratelimit.go` legt für jede Quell-IP (`clientIP(r)`) einen dauerhaften Eintrag in der `buckets`-Map an. Es gibt weder TTL noch Eviction noch Löschroutine. IP-Adressen sind personenbezogene Daten (Art. 4 Nr. 1 DSGVO). Die Verarbeitung ist zwar durch berechtigtes Interesse (Missbrauchsverhinderung/Verfügbarkeit, Art. 6 Abs. 1 lit. f DSGVO) grundsätzlich begründbar, aber die **Speicherbegrenzung** (Art. 5 Abs. 1 lit. e DSGVO) ist verletzt: Die Daten bleiben bis zum Prozessende erhalten, ohne Lösch- oder Anonymisierungskonzept.
 
-### 1.3 Fehlende Cache-Control-Header bei PII-haltigen Antworten
-- **Schweregrad:** mittel
-- **Ort:** `evaluate.go`, `middleware.go`
-- **Befund:** `GET /flags/{key}/evaluate` gibt die `user`-ID im JSON-Body zurück. Antworten auf GET-Anfragen können ohne `Cache-Control: no-store` von Browsern, Proxys oder CDNs zwischengespeichert werden. Dadurch können personenbezogene Daten unkontrolliert vervielfältigt werden.
-- **Konkrete Abhilfe:**  
-  In `Logging` oder direkt in `Evaluate` setzen:
-  ```go
-  w.Header().Set("Cache-Control", "no-store")
-  ```
-  Sinnvoll ist ein globaler Header für alle API-Antworten, da Konfigurationsdaten ebenfalls nicht ohne Weiteres gecacht werden sollen.
+**Konkrete Abhilfe:**
+- `tokenBucket` in `ratelimit.go` um ein Feld `lastSeen time.Time` erweitern.
+- In `allow()` bei jedem Zugriff `lastSeen = now` setzen.
+- Zusätzlich einen periodischen Cleanup einführen (z. B. alle 5–15 Minuten Einträge mit `now.Sub(b.lastSeen) > 15*time.Minute` entfernen) oder bei Überschreiten einer Maximalgröße alte Einträge verwerfen.
+- In `README.md` / `SECURITY.md` die Rechtsgrundlage (Art. 6 Abs. 1 lit. f DSGVO), den Zweck (Rate-Limiting) und die Löschfrist dokumentieren.
 
-### 1.4 Unnötige Rückgabe des `user`-Werts
-- **Schweregrad:** mittel
-- **Ort:** `evaluate.go`
-- **Befund:** `evaluateResponse` enthält das Feld `User` und spiegelt den vom Client gesendeten `user`-Wert zurück. Der Client kennt den Wert bereits; die Antwort erhöht die Exposition personenbezogener Daten. Zwar verlangt AC-16 diese Rückgabe und die Logging-Middleware protokolliert sie nicht, aber aus Datensparsamkeitsgründen (Art. 5 Abs. 1 lit. c DSGVO) ist das unnötig.
-- **Konkrete Abhilfe:**  
-  Das Feld `User` aus `evaluateResponse` entfernen oder nur dann zurückgeben, wenn der Client dies ausdrücklich benötigt. Falls die Rückgabe beibehalten wird, ist zwingend `Cache-Control: no-store` zu setzen und die Verarbeitung in der Datenschutzdokumentation zu begründen.
-
-### 1.5 Fehlende Dokumentation von Rechtsgrundlage und Verarbeitungszweck
-- **Schweregrad:** niedrig
-- **Ort:** `README.md`, `SECURITY.md` oder separates Datenschutz-Dokument
-- **Befund:** Der Code verarbeitet mit der `user`-ID personenbezogene Daten, dokumentiert aber weder Zweck, Rechtsgrundlage (Art. 6 DSGVO) noch die Rollen (Verantwortlicher/Auftragsverarbeiter). Die Rechenschaftspflicht aus Art. 5 Abs. 2 DSGVO ist nicht erfüllt.
-- **Konkrete Abhilfe:**  
-  Im `README.md` einen Abschnitt „Datenschutz“ ergänzen: Zweck (deterministische Feature-Auswertung), Rechtsgrundlage, Speicherdauer (`user` wird nicht gespeichert), Löschung, Kontakt. Falls der Dienst als Auftragsverarbeiter betrieben wird, ist ein AV-Vertrag erforderlich.
-
-### 1.6 Retention bei potenziell personenbezogenen Flag-Beschreibungen
-- **Schweregrad:** niedrig
-- **Ort:** `store.go`, `README.md`
-- **Befund:** Der In-Memory-Store hält Flags bis zum Prozessende. `description` ist ein Freitextfeld und kann personenbezogene Daten enthalten. Es gibt keine dokumentierte Beschränkung oder Löschfrist.
-- **Konkrete Abhilfe:**  
-  Dokumentieren, dass `description` keine personenbezogenen Daten enthalten darf. Falls das nicht garantiert werden kann, eine TTL für Flags oder eine regelmäßige Löschroutine im Store vorsehen.
+> Funktion bleibt erhalten: Der Limiter muss weiterhin pro IP tokengesteuert arbeiten; ein TTL-Cleanup beeinträchtigt die Funktionalität nicht.
 
 ---
 
-## 2. Cyber Resilience Act (CRA)
+### Finding D2 — Protokollierung des vollständigen Pfads kann personenbezogene Daten enthalten
+**Schweregrad:** medium
 
-### 2.1 Fehlende Dokumentation der Sicherheitseigenschaften und SBOM
-- **Schweregrad:** mittel
-- **Ort:** `README.md`, `SECURITY.md`
-- **Befund:** Es sind keine dokumentierten Sicherheitseigenschaften, kein Bedrohungsmodell und keine SBOM sichtbar. Das Produkt hat keine externen Abhängigkeiten, was die SBOM vereinfacht; dennoch verlangt der CRA für Produkte mit digitalen Elementen eine dokumentierte Sicherheitsanalyse und Nachvollziehbarkeit der Komponenten.
-- **Konkrete Abhilfe:**  
-  Eine `SECURITY.md` ergänzen mit:
-  - SBOM: „Keine Drittanbieter-Abhängigkeiten; ausschließlich Go-Standardbibliothek, Go 1.23“.
-  - Sicherheitseigenschaften: Body-Limit 1 MiB, Content-Type-Prüfung, deterministische SHA-256-Auswertung, keine PII-Logs.
-  - Bedrohungsmodell: unverschlüsselte Übertragung, fehlende Authentifizierung, DoS-Risiken.
+`middleware.go` loggt `r.URL.Path` mit `log.Printf("%s %q %d %s", r.Method, r.URL.Path, ...)`. Für `/flags/{key}/evaluate` und `/flags/{key}` wird der konkrete Flag-Key protokolliert. Der Flag-Key selbst kann vom Betreiber frei gewählt werden und darf bis 128 Zeichen beliebig sein (`store.go`). Enthält ein Flag-Key z. B. eine Kundennummer, E-Mail-Adresse oder sonstige Kennung, wird diese dauerhaft in Logs geschrieben — ohne zwingende Notwendigkeit. Der geforderte `user`-Parameter wird korrekterweise nicht geloggt; der Flag-Key bleibt aber ein Restrisiko.
 
-### 2.2 Unsichere Standardkonfiguration des HTTP-Servers
-- **Schweregrad:** mittel
-- **Ort:** `main.go`
-- **Befund:** `http.ListenAndServe` startet ohne Timeouts. Slowloris, Idle-Connection-Erschöpfung oder langsame Clients können den Dienst blockieren. Das widerspricht „security by design/default“.
-- **Konkrete Abhilfe:**  
-  Einen `http.Server` mit Timeouts verwenden:
-  ```go
-  srv := &http.Server{
-      Addr:              ":8080",
-      Handler:           newHandler(),
-      ReadHeaderTimeout: 5 * time.Second,
-      ReadTimeout:       10 * time.Second,
-      WriteTimeout:      10 * time.Second,
-      IdleTimeout:       120 * time.Second,
-  }
-  srv.ListenAndServe()
-  ```
-  Dazu `import "time"` ergänzen.
+**Konkrete Abhilfe:**
+- In `middleware.go` eine Hilfsfunktion `sanitizePath(path string) string` ergänzen, die bei Pfaden unterhalb von `/flags/` das erste Pfadsegment nach `/flags/` maskiert, z. B. `/flags/{key}` und `/flags/{key}/evaluate` liefert.
+- Alternativ dokumentieren und durchsetzen, dass Flag-Keys **keine personenbezogenen Daten enthalten dürfen** (z. B. Validierung in `flags.go` um verbotene Muster ergänzen). Die Maskierung ist der robustere datenschutzfreundliche Default.
+- Tests in `middleware_test.go` entsprechend anpassen, wenn die Log-Ausgabe nun das Muster statt des konkreten Werts enthält.
 
-### 2.3 Kein dokumentierter Update-/Patch-Prozess
-- **Schweregrad:** niedrig bis mittel
-- **Ort:** `README.md`, `SECURITY.md`
-- **Befund:** Es ist kein Prozess für Sicherheitsupdates, Versionsverwaltung oder Schwachstellenmanagement sichtbar.
-- **Konkrete Abhilfe:**  
-  Im `README.md` einen Wartungsabschnitt ergänzen: Versionsschema, Verantwortlichkeit, Prozess für Sicherheits-Patches, Ort der Veröffentlichung.
+> Funktion bleibt erhalten: Das Logging muss weiterhin Methode, Pfad, Status und Dauer ausgeben; die Maskierung ändert nur den Pfadbestandteil.
 
-### 2.4 Fehlende Rate-Limits / DoS-Schutz auf Anwendungsebene
-- **Schweregrad:** niedrig
-- **Ort:** `middleware.go`, `main.go`
-- **Befund:** Es gibt keine Begrenzung der Request-Rate. Das erleichtert Missbrauch und Ressourcenerschöpfung.
-- **Konkrete Abhilfe:**  
-  Eine Rate-Limit-Middleware einführen (z. B. Token-Bucket pro Client-IP) oder den Betrieb hinter einem Reverse-Proxy mit Rate-Limiting dokumentieren.
+---
 
-### 2.5 Fehlende Authentifizierung (auch CRA-relevant)
-- **Schweregrad:** hoch
-- **Ort:** `main.go`
-- **Befund:** Wie unter 1.2 beschrieben, ist der Verwaltungsendpunkt ungeschützt. Unter CRA ist der Schutz vor unbefugtem Zugriff eine zentrale Anforderung.
-- **Konkrete Abhilfe:**  
-  Siehe 1.2. Die Authentifizierung ist die wichtigste CRA-Maßnahme vor Inbetriebnahme.
+### Finding D3 — Fehlende Datenschutzdokumentation für Betreiber
+**Schweregrad:** low
+
+Für ein reines Backend besteht keine Pflicht zu einer eingebauten Datenschutzerklärung. Der Code selbst enthält jedoch keine Hinweise, welche personenbezogenen Daten verarbeitet werden (IP-Adressen im Rate-Limiter, API-Keys, `user`-Parameter). Die Dateien `README.md`, `SECURITY.md` und `COMPLIANCE.md` sind vorhanden, ihr Inhalt ist aber nicht Teil des sichtbaren Reviewstands. Betreiber müssen wissen, was sie verarbeiten und wie sie Betroffenenrechte erfüllen können.
+
+**Konkrete Abhilfe:**
+- In `README.md` oder `SECURITY.md` einen Abschnitt „Datenschutz / Verarbeitete Daten“ ergänzen:
+  - Verarbeitung von Quell-IPs zum Rate-Limiting, Rechtsgrundlage Art. 6 Abs. 1 lit. f DSGVO, Löschfrist und Zweck.
+  - Hinweis, dass `user` ausschließlich für die Hash-Berechnung und die Antwort verwendet und nicht persistiert wird.
+  - Hinweis, dass Flag-Keys keine personenbezogenen Daten enthalten sollen (oder dokumentierte Konsequenz, falls doch).
+  - Betroffenenrechte: Da keine dauerhaft gespeicherten Nutzerprofile bestehen, ist die Löschung durch Prozessneustart bzw. Löschung der Flags möglich; für IP-Daten gilt die TTL.
+
+---
+
+## 2. EU Cyber Resilience Act (CRA)
+
+### Finding C1 — Rate-Limit greift erst nach Authentifizierung
+**Schweregrad:** high
+
+In `main.go` ist der Aufbau:
+
+```go
+mux.Handle("/", RequireAuth(RateLimit(protected)))
+```
+
+Damit durchläuft ein unauthentifizierter Request zuerst `RequireAuth` und wird bei fehlendem/ungültigem API-Key sofort mit 401 beantwortet, **ohne** den Rate-Limiter zu passieren. Ein Angreifer kann unbegrenzt viele Anfragen ohne gültigen Key senden (Brute-Force auf den API-Key, CPU-/Speicher-DoS). Das widerspricht dem CRA-Grundsatz „security by design/default“ und der Verfügbarkeit.
+
+Zusätzlich begrenzt `RateLimit` nur POST/PUT/DELETE. GET-Anfragen (z. B. `/flags` oder `/flags/{key}/evaluate`) sind auch ohne gültigen Key unlimitiert, da der Limiter vor dem Auth-Check hängt und GET dort nie limitiert wird.
+
+**Konkrete Abhilfe:**
+- Einen separaten Fehlversuchs-/Request-Limiter in `RequireAuth` oder davor einbauen:
+  - In `auth.go` bei fehlendem/ungültigem Key die Quell-IP zählen; nach z. B. 10 Fehlversuchen pro Minute mit 429 `rate limit exceeded` antworten oder eine kurze Sperre setzen.
+  - Alternativ in `main.go` einen vorgelagerten Limiter für **alle** Anfragen an geschützte Routen einfügen (nicht nur Schreibzugriffe), z. B. `mux.Handle("/", RateLimitAuthFailures(RequireAuth(RateLimit(protected))))`, wobei `RateLimitAuthFailures` nur bei 401-Antworten zählt.
+  - `GET /healthz` bleibt bewusst öffentlich und davon unberührt.
+
+> Funktion bleibt erhalten: Berechtigte Nutzer mit gültigem API-Key können normale GET-Requests weiterhin ausführen; nur unauthentifizierte Fehlversuche werden begrenzt.
+
+---
+
+### Finding C2 — Kein TLS im sichtbaren Code
+**Schweregrad:** medium
+
+`main.go` startet den Server nur mit `ListenAndServe`, es gibt keine TLS-Option. Der Default-Bind `127.0.0.1:8080` ist sicher, aber sobald `FLAG_ADDR` auf eine öffentliche Adresse gesetzt wird, läuft der Dienst unverschlüsselt. API-Keys und Nutzerkennungen (`user`) wären dann im Klartext unterwegs. Die CRA verlangt angemessene Sicherheitsmaßnahmen für Produkte mit digitalen Elementen, einschließlich geschützter Kommunikation.
+
+**Konkrete Abhilfe:**
+- In `main.go` optionale TLS-Unterstützung ergänzen, z. B. bei gesetzten Umgebungsvariablen `FLAG_TLS_CERT`/`FLAG_TLS_KEY` `server.ListenAndServeTLS(cert, key)` verwenden.
+- Zusätzlich in `README.md`/`SECURITY.md` dokumentieren: „Bei Betrieb hinter einem Reverse Proxy muss TLS-Terminierung vorgeschaltet sein; direkter öffentlicher Betrieb ohne TLS ist unzulässig.“
+
+> Funktion bleibt erhalten: Der bestehende Default (nur localhost) bleibt unverändert; die TLS-Option ist additiv.
+
+---
+
+### Finding C3 — Unbegrenzt wachsende Rate-Limiter-Map (Ressourcen-DoS)
+**Schweregrad:** medium
+
+Dieselbe Ursache wie Finding D1, aber aus CRA-Sicht relevant als Speicher-/Ressourcen-Erschöpfung. Die `buckets`-Map in `ratelimit.go` wächst mit jeder neuen Quell-IP dauerhaft an. Ein Angreifer kann durch viele verschiedene Quell-IPs den Speicherverbrauch bis zum Absturz treiben.
+
+**Konkrete Abhilfe:**
+- Wie D1: TTL/Eviction implementieren.
+- Optional eine maximale Map-Größe festlegen (z. B. 100.000 Einträge) und bei Erreichen alte Einträge entfernen oder den am längsten nicht gesehenen Eintrag verwerfen.
+
+> Funktion bleibt erhalten: Normale Clients behalten ihren Bucket; nur veraltete/überzählige Einträge werden entfernt.
+
+---
+
+### Finding C4 — SBOM und Update-/Patch-Fähigkeit nicht im Code sichtbar
+**Schweregrad:** low
+
+Es gibt keine externen Module (`go.mod` ohne Dependencies), daher wäre eine SBOM trivial. Im sichtbaren Code ist jedoch keine SBOM-Erzeugung, kein dokumentierter Update-/Patch-Mechanismus und keine Sicherheitsdokumentation sichtbar. Die Dateien `COMPLIANCE.md`, `SECURITY.md` und `README.md` existieren, ihr Inhalt wurde aber nicht vorgelegt und kann im Review nicht bestätigt werden.
+
+**Konkrete Abhilfe:**
+- In `go.mod` darauf achten, dass keine externen Abhängigkeiten auftauchen; bei zukünftigen Abhängigkeiten `go.sum` pflegen.
+- In `COMPLIANCE.md` oder `SECURITY.md` festschreiben:
+  - SBOM (auch leer, z. B. „keine Fremdmodule, reine Go-Standardbibliothek“).
+  - Update-/Patch-Prozess (Release-Tag, Deployment, Neustart mit sauberem State).
+  - Sicherheitskontakt und Meldeweg für Schwachstellen.
 
 ---
 
 ## 3. EU AI Act
 
-- **Nicht anwendbar.** Der Dienst enthält keine KI-Funktion im Sinne des AI Act. Es handelt sich um eine deterministische Feature-Flag-Auswertung ohne maschinelles Lernen oder Profiling.
+### Kein Befund
+
+Der sichtbare Code enthält keine KI-Funktion. Der AI Act ist daher gegenständlich nicht einschlägig. Keine Transparenz- oder Kennzeichnungspflichten.
 
 ---
 
-## 4. Pflichttexte & UI
+## 4. Pflichttexte, UI und Barrierefreiheit
 
-- **Entfällt.** Das Produkt ist ein reines Backend ohne öffentliche Web-Oberfläche. Es gibt keine rechtlichen Hinweispflichten wie Impressum, Cookie-Banner oder Barrierefreiheitserklärung. Datenschutzhinweise sind dennoch sinnvoll (siehe 1.5), aber keine UI-Pflicht.
+### Kein Befund
 
----
-
-## 5. Barrierefreiheit
-
-- **Entfällt.** Keine öffentliche Web-UI vorhanden; WCAG/BITV/EAA sind nicht anwendbar.
+Das Produkt ist ein reines Backend ohne Endnutzer- oder Browser-UI. Cookie-Banner, Legal Notice, Barrierefreiheit nach WCAG/BITV/EAA sind nicht anwendbar. Eine Datenschutzerklärung für Endnutzer kann erforderlich sein, wenn der Betreiber den Dienst in ein Endkundenprodukt integriert; diese liegt außerhalb dieses Repositorys.
 
 ---
 
-## Positivbefunde
+## Zusammenfassung
 
-- **Logging erfüllt die Datenschutzanforderungen:** Die Middleware protokolliert ausschließlich Methode, Pfad, Statuscode und Dauer. Der Query-Parameter `user` wird nicht geloggt. Die Tests `TestLoggingDoesNotLogQueryParameters` und `TestEvaluateUserNotStored` decken dies ab.
-- **Body-Limit und Content-Type-Prüfung:** `maxBodyBytes` in Kombination mit `http.MaxBytesReader` und `mime.ParseMediaType` ist sauber umgesetzt und verhindert übermäßig große oder falsch typisierte Requests.
-- **Flüchtige Verarbeitung der `user`-ID:** Der `user`-Wert wird ausschließlich für SHA-256 und die Antwort verwendet und nicht im Store gehalten. Das entspricht Datenminimierung.
-- **Thread-sicherer In-Memory-Store:** `sync.RWMutex` verhindert Datenrennen.
-- **Fehlerbehandlung als einheitliche JSON-Objekte:** Gute Voraussetzung für einen sicheren API-Betrieb.
+Behebbare Mängel, daher **CHANGES_REQUESTED**. Die wichtigsten Maßnahmen:
 
----
+1. **Rate-Limiter vor Auth / Fehlversuchs-Limiter ergänzen** (`main.go`, `auth.go`) — CRA, Brute-Force-Schutz.
+2. **IP-Speicherung mit TTL/Eviction und Dokumentation versehen** (`ratelimit.go`, `README.md`) — DSGVO.
+3. **Pfad-Logging maskieren oder Flag-Keys mit PII unterbinden** (`middleware.go`, `flags.go`) — DSGVO.
+4. **Optional TLS und klare Betriebsdokumentation ergänzen** (`main.go`, `SECURITY.md`) — CRA.
+5. **SBOM-/Update-Prozess in `COMPLIANCE.md`/`SECURITY.md` nachvollziehbar machen** — CRA.
 
-## Fazit
-
-Der Code erfüllt die fachlichen Anforderungen und hat solide datenschutzfreundliche Logging- und Validierungsmechanismen. Für eine marktreife Inbetriebnahme fehlen jedoch zwingend Transportverschlüsselung und Zugriffskontrolle. Daneben sind Cache-Control-Header, Server-Timeouts, eine SBOM sowie eine Datenschutz-/Sicherheitsdokumentation erforderlich. Es liegen keine fundamentalen Rechtsverstöße vor, daher kein „BLOCKED“, aber die genannten Lücken müssen vor dem produktiven Einsatz behoben werden.
+Keine Fundamentalverstöße, die ein sofortiges Blockieren des Merges rechtfertigen, aber die genannten Punkte sollten vor Auslieferung an Kunden behoben werden.
