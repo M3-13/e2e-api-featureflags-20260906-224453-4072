@@ -38,6 +38,21 @@ go build ./...
 
 Das erzeugt ein ausführbares Binary, das den Dienst auf Port `8080` startet.
 
+## Konfiguration
+
+Der Dienst wird über zwei Umgebungsvariablen konfiguriert:
+
+| Variable       | Beschreibung                                                        | Standard |
+| -------------- | ------------------------------------------------------------------- | -------- |
+| `FLAG_API_KEY` | API-Key zur Authentifizierung der API-Zugriffe.                     | –        |
+| `FLAG_ADDR`    | Bind-Adresse des HTTP-Servers, z. B. `127.0.0.1:8080`.              | `:8080`  |
+
+Beispiel:
+
+```sh
+FLAG_API_KEY=... FLAG_ADDR=127.0.0.1:8080 go run .
+```
+
 ## Endpunkte
 
 Fehler werden immer als JSON-Objekt in der Form `{"error":"..."}`
@@ -60,3 +75,42 @@ zurückgegeben.
 - Einheitliche JSON-Fehlerobjekte
 - Logging-Middleware (Methode, Pfad, Statuscode, Dauer)
 - Health-Endpoint `GET /healthz`
+
+## Datenschutz
+
+**Zweck der Verarbeitung:** Die über `GET /flags/{key}/evaluate?user={id}`
+übergebene Nutzer-ID wird ausschließlich zur deterministischen
+Feature-Auswertung verwendet. Dazu wird der SHA-256-Hash von `key:user`
+berechnet, um pro Nutzer eine stabile Rollout-Entscheidung zu treffen.
+
+**Rechtsgrundlage:** Die Verarbeitung erfolgt auf Grundlage von Art. 6 Abs. 1
+DSGVO (berechtigtes Interesse an einem korrekten, reproduzierbaren
+Feature-Rollout).
+
+**Datenminimierung:**
+
+- Der `user`-Wert wird nicht gespeichert und ausschließlich für die
+  SHA-256-Berechnung sowie die Rückgabe im Antwort-JSON genutzt.
+- Das Freitextfeld `description` eines Flags darf keine personenbezogenen
+  Daten enthalten.
+
+**Löschung:** Flags liegen ausschließlich im flüchtigen In-Memory-Store und
+werden mit Prozessende automatisch gelöscht. Der `user`-Wert wird zu keinem
+Zeitpunkt gespeichert oder protokolliert.
+
+**Verantwortlicher / Kontakt:** Verantwortliche Stelle ist der jeweilige
+Betreiber der Dienst-Instanz. Anfragen zum Datenschutz (Auskunft, Berichtigung,
+Löschung) sind an die im Repository hinterlegte Kontaktadresse zu richten.
+
+## Wartung
+
+**Versionsschema:** Semantic Versioning in der Form `MAJOR.MINOR.PATCH`.
+
+**Verantwortlichkeit:** Die Wartung erfolgt durch das Entwicklungsteam des
+Feature-Flag-Service. Änderungen werden über den regulären Review- und
+Merge-Prozess eingespielt.
+
+**Prozess für Sicherheits-Patches:** Sicherheitslücken werden priorisiert
+behandelt. Ein Patch durchläuft den regulären CI-Prozess (`go build ./...` und
+`go test ./...`) und wird nach Review als Hotfix veröffentlicht. Die
+Veröffentlichung erfolgt als neue Version gemäß SemVer.
