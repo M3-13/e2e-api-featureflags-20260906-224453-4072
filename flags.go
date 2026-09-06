@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"mime"
 	"net/http"
 	"strings"
@@ -48,6 +49,10 @@ func readJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported media type")
 		return false
 	}
+	if r.ContentLength > maxBodyBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return false
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(dst); err != nil {
@@ -58,6 +63,13 @@ func readJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 		}
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return false
+	}
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
 	}
 	return true
 }

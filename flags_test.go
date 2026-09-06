@@ -160,6 +160,33 @@ func TestCreateFlagBodyTooLarge(t *testing.T) {
 	}
 }
 
+func TestCreateFlagTrailingDataOverLimit(t *testing.T) {
+	resetStore()
+	body := `{"key":"prefix","enabled":true}` + strings.Repeat(" ", maxBodyBytes)
+	req := httptest.NewRequest(http.MethodPost, "/flags", strings.NewReader(body))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	newHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", rr.Code)
+	}
+}
+
+func TestUpdateFlagTrailingDataOverLimit(t *testing.T) {
+	resetStore()
+	postFlag(t, `{"key":"upd","enabled":true}`)
+	body := `{"enabled":false}` + strings.Repeat(" ", maxBodyBytes)
+	req := httptest.NewRequest(http.MethodPut, "/flags/upd", strings.NewReader(body))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	newHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", rr.Code)
+	}
+}
+
 func TestListFlagsSorted(t *testing.T) {
 	resetStore()
 	for _, k := range []string{"charlie", "alpha", "bravo"} {
